@@ -1,23 +1,371 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="fr">
 <head>
-<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<meta name="description" content="ColorFit — découvre les couleurs, styles et outfits qui te mettent en valeur.">
-<meta name="theme-color" content="#111111">
-<title>ColorFit — Ton style, ta palette</title>
-<link rel="stylesheet" href="/styles.css">
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>ColorFit — Analyse Colorimétrique & Conseil Vestimentaire Personnalisé</title>
+  <link rel="stylesheet" href="/styles.css" />
 </head>
 <body>
-<header class="nav"><a class="brand" href="#top">COLOR<span>FIT</span></a><nav><a href="#how">Comment ça marche</a><a href="#pricing">Premium</a><button id="accountBtn" class="ghost">Connexion</button></nav></header>
-<main id="top">
-<section class="hero"><div class="hero-copy"><div class="eyebrow">PERSONAL STYLE ENGINE</div><h1>Les couleurs qui<br><em>te vont vraiment.</em></h1><p>Une analyse personnalisée de ton apparence, puis des outfits pensés pour ton style, ton occasion et ton budget.</p><div class="hero-actions"><button class="primary" onclick="go('analyze')">Commencer mon analyse <span>→</span></button><a class="textlink" href="#how">Découvrir →</a></div><div class="trust"><span>🔒 Photos analysées localement</span><span>✦ Pas de filtre beauté</span><span>🇪🇺 Pensé pour l'Europe</span></div></div><div class="hero-art"><div class="palette-card"><small>TA PALETTE</small><div class="swatches"><i style="background:#244637"></i><i style="background:#8B3A2E"></i><i style="background:#B48A5A"></i><i style="background:#24364B"></i><i style="background:#E5D4BA"></i></div><strong>Deep Autumn</strong><span>Chaud · profond · contrasté</span></div><div class="orb"></div></div></section>
-<section id="how" class="section"><div class="section-head"><div><span class="eyebrow">EN 3 ÉTAPES</span><h2>Du selfie à ton dressing.</h2></div><p>ColorFit commence par tes couleurs, puis transforme l'analyse en décisions concrètes.</p></div><div class="steps"><article><b>01</b><h3>Deux photos</h3><p>Une photo du visage et une photo en pied. La lumière naturelle donne les meilleurs résultats.</p></article><article><b>02</b><h3>Ta palette</h3><p>Température, contraste et intensité sont combinés pour créer une palette personnalisée.</p></article><article><b>03</b><h3>Tes outfits</h3><p>Choisis ton style, ton occasion et ton budget. ColorFit compose ensuite tes looks.</p></article></div></section>
-<section id="analyze" class="section analyze"><div class="section-head"><div><span class="eyebrow">ANALYSE</span><h2>Construisons ton profil.</h2></div><p>Les photos restent dans ton navigateur pour cette version : seules les données de couleur nécessaires au profil peuvent être enregistrées.</p></div><div class="workspace"><div class="upload-grid"><label class="upload"><input id="face" type="file" accept="image/jpeg,image/png,image/webp"><div class="upload-icon">◉</div><strong>Photo du visage</strong><span>Portrait · lumière naturelle</span><div class="preview" id="facePreview"></div></label><label class="upload"><input id="body" type="file" accept="image/jpeg,image/png,image/webp"><div class="upload-icon">◇</div><strong>Photo en pied</strong><span>Tenue visible · sans filtre</span><div class="preview" id="bodyPreview"></div></label></div><div class="prefs"><h3>Ton univers</h3><div class="field"><label>Style</label><select id="style"><option>Minimaliste</option><option>Casual</option><option>Streetwear</option><option>Chic</option><option>Old Money</option><option>Techwear</option><option>Y2K</option></select></div><div class="field"><label>Occasion</label><select id="occasion"><option>Tous les jours</option><option>Université</option><option>Travail</option><option>Date</option><option>Soirée</option><option>Vacances</option></select></div><div class="field"><label>Budget</label><select id="budget"><option>€</option><option>€€</option><option>€€€</option><option>Sans limite</option></select></div><button class="primary full" id="analyzeBtn">Analyser mon profil <span>→</span></button><p class="tiny">En continuant, tu confirmes avoir le droit d'utiliser les photos envoyées. Les photos ne sont pas téléversées par cette interface.</p></div></div></section>
-<section id="result" class="section result hidden"><div class="result-top"><div><span class="eyebrow">TON PROFIL</span><h2 id="profileName">Deep Autumn</h2><p id="profileDesc">Chaud · profond · contrasté</p></div><div class="score"><strong id="score">75</strong><span>/ 100<br><small>fiabilité estimée</small></span></div></div><div class="palette"><h3>Ta palette recommandée</h3><div id="paletteSwatches" class="swatches big"></div><div class="legend"><span>✓ Couleurs à tester près du visage</span><span>Les photos filtrées ou à contre-jour réduisent la fiabilité</span></div></div><div class="outfits"><div class="outfit-head"><div><span class="eyebrow">APERÇUS DE TENUES</span><h2>Looks pensés pour toi.</h2></div><button class="secondary" onclick="requireLogin()">+ Enregistrer</button></div><div id="outfitGrid" class="outfit-grid"></div></div><div class="catalog-section"><div class="catalog-heading"><div><span class="eyebrow">PIÈCES DISPONIBLES</span><h2>Des vêtements à découvrir.</h2></div><span class="catalog-tag">Catalogue Livostyle · US / USD</span></div><p class="catalog-note"><span id="catalogUpdated">Sélection basée sur ta palette.</span> Les prix sont en dollars US ; disponibilité et prix peuvent évoluer sur le site marchand.</p><div id="productGrid" class="product-grid" aria-live="polite"><p>Recherche des pièces compatibles…</p></div><p class="catalog-credit">Données : <a href="https://github.com/arturayupov/womens-fashion-catalog-open-data" target="_blank" rel="noopener noreferrer">Livostyle Open Data</a> (MIT). Catalogue majoritairement féminin. Les images et achats restent hébergés par la boutique.</p></div></section>
-<section id="pricing" class="section pricing"><div class="section-head"><div><span class="eyebrow">PREMIUM</span><h2>Plus qu'une palette.</h2></div><p>Une formule pour transformer l'analyse en véritable assistant de style.</p></div><div class="plans"><article class="plan"><span>FREE</span><h3>0 €</h3><p>Pour découvrir ton profil.</p><ul><li>1 analyse</li><li>Palette personnalisée</li><li>3 suggestions d'outfit</li></ul><button class="secondary" onclick="go('analyze')">Commencer</button></article><article class="plan featured"><div class="badge">LE PLUS POPULAIRE</div><span>PREMIUM</span><h3>5,99 € <small>/ mois</small></h3><p>Ton styliste personnel.</p><ul><li>Analyses avancées</li><li>Outfits illimités</li><li>Mon dressing</li><li>Recherche shopping</li><li>Liens vers les produits</li><li>Historique & préférences</li></ul><button class="primary" onclick="subscribe()">Passer Premium →</button><small>Paiement sécurisé par Stripe · résiliable à tout moment</small></article><article class="plan"><span>ONE-SHOT</span><h3>9,99 €</h3><p>Une analyse complète, sans abonnement.</p><ul><li>Analyse avancée</li><li>Palette complète</li><li>Outfits personnalisés</li></ul><button class="secondary" onclick="alert('Paiement unique disponible dans la prochaine itération.')">Choisir</button></article></div></section>
-</main>
-<footer><div class="brand">COLOR<span>FIT</span></div><p>Style personnel, données personnelles : on protège les deux.</p><div><a href="#">Confidentialité</a><a href="#">CGU</a><a href="#pricing">Premium</a></div></footer>
-<div id="accountPanel" class="modal hidden"><div class="modal-box account-box"><button class="close" id="closeAccount">×</button><span class="eyebrow">MON COMPTE</span><h2>Ton espace ColorFit</h2><div class="account-info"><div><span>Email</span><strong id="accountEmail">—</strong></div><div><span>Formule</span><strong id="accountPlan">—</strong></div><div><span>Analyses</span><strong id="analysisCount">0</strong></div><div><span>Dernier profil</span><strong id="latestProfile">Aucune analyse</strong></div></div><p id="accountMsg" class="tiny"></p><div class="account-actions"><button class="secondary" id="manageBillingBtn">Gérer mon abonnement</button><button class="primary" id="logoutBtn">Se déconnecter</button></div></div></div>
-<div id="modal" class="modal hidden"><div class="modal-box"><button class="close" onclick="closeModal()">×</button><span class="eyebrow">COMPTE</span><h2 id="modalTitle">Connexion</h2><form id="authForm"><input id="email" type="email" placeholder="Email" autocomplete="email" required><input id="password" type="password" placeholder="Mot de passe (10 caractères min.)" minlength="10" autocomplete="current-password" required><button class="primary full" type="submit">Continuer →</button></form><button class="switch" id="switchAuth">Créer un compte</button><p id="authMsg" class="tiny"></p></div></div>
-<script src="/app.js?v=6" defer></script>
-</body></html>
+  <header class="site-header" role="banner">
+    <div class="container header-inner">
+      <a href="#analyse" class="brand-logo" aria-label="Accueil ColorFit">
+        <span class="brand-dot" aria-hidden="true"></span>
+        <span>ColorFit</span>
+      </a>
+
+      <nav class="main-nav" aria-label="Navigation principale">
+        <a href="#analyse">Analyse Colorimétrique</a>
+        <a href="#outfits">Générateur d'Outfits</a>
+        <a href="#dressing">Dressing Virtuel</a>
+        <a href="#boutique">Shopping Réel</a>
+        <a href="#tarifs">Offres & Tarifs</a>
+      </nav>
+
+      <div class="header-actions">
+        <button type="button" id="open-auth-btn" class="btn btn-outline">Connexion / Inscription</button>
+        <button type="button" id="open-account-btn" class="btn btn-primary hidden" aria-haspopup="dialog">
+          Mon compte
+        </button>
+      </div>
+    </div>
+  </header>
+
+  <main class="container" role="main">
+    <!-- Bandeau d'état global -->
+    <div id="global-toast" class="toast hidden" role="status" aria-live="polite"></div>
+
+    <!-- 1. SECTION ANALYSE COLORIMÉTRIQUE -->
+    <section id="analyse" class="card section-block" aria-labelledby="title-analyse">
+      <div class="section-header">
+        <h1 id="title-analyse">Analyse Colorimétrique Explicable (CIELAB)</h1>
+        <p class="subtitle">
+          Envoyez une photo de votre visage en lumière naturelle. Vos images sont pré-analysées dans votre navigateur ; seules les mesures chromatiques anonymisées des régions (peau, cheveux, yeux) sont transmises au moteur. Aucune reconnaissance d'identité n'est effectuée.
+        </p>
+      </div>
+
+      <div class="upload-grid">
+        <div class="upload-box">
+          <label for="face-photo-input" class="file-label">
+            <strong>1. Photo de votre visage (Obligatoire)</strong>
+            <span>Lumière du jour, sans filtre ni maquillage couvrant, visage centré</span>
+          </label>
+          <input type="file" id="face-photo-input" accept="image/jpeg,image/png,image/webp" />
+          <canvas id="analysis-canvas" width="64" height="64" class="hidden" aria-hidden="true"></canvas>
+          <div id="photo-preview-wrap" class="preview-wrap hidden">
+            <img id="face-preview-img" alt="Aperçu de la photo sélectionnée" />
+          </div>
+        </div>
+
+        <div class="analysis-controls">
+          <h3>Conditions de fiabilité</h3>
+          <ul class="checklist">
+            <li>Face à une fenêtre en lumière naturelle (sans soleil direct)</li>
+            <li>Pas de contre-jour ni d'éclairage néon jaune/bleu</li>
+            <li>Les vêtements et l'arrière-plan sont automatiquement isolés pour ne pas fausser le sous-ton de la peau</li>
+          </ul>
+          <button type="button" id="run-analysis-btn" class="btn btn-primary btn-lg" disabled>
+            Lancer l'analyse colorimétrique
+          </button>
+          <button type="button" id="demo-sample-btn" class="btn btn-outline">
+            Tester avec un profil calibré d'exemple
+          </button>
+        </div>
+      </div>
+
+      <!-- Résultat de l'analyse -->
+      <div id="analysis-result" class="result-panel hidden" aria-live="polite"></div>
+    </section>
+
+    <!-- 2. SECTION GÉNÉRATEUR D'OUTFITS -->
+    <section id="outfits" class="card section-block" aria-labelledby="title-outfits">
+      <div class="section-header">
+        <h2 id="title-outfits">Recommandations d'Outfits sur Mesure</h2>
+        <p class="subtitle">Personnalisez votre style, l'occasion et votre budget selon votre palette saisonnière.</p>
+      </div>
+
+      <form id="outfit-form" class="form-grid">
+        <div class="form-group">
+          <label for="outfit-season">Profil colorimétrique</label>
+          <select id="outfit-season" name="seasonId">
+            <option value="printemps_clair">Printemps Clair</option>
+            <option value="printemps_chaud" selected>Printemps Chaud</option>
+            <option value="printemps_vif">Printemps Vif</option>
+            <option value="ete_clair">Été Clair</option>
+            <option value="ete_doux">Été Doux</option>
+            <option value="ete_froid">Été Froid</option>
+            <option value="automne_doux">Automne Doux</option>
+            <option value="automne_chaud">Automne Chaud</option>
+            <option value="automne_profond">Automne Profond</option>
+            <option value="hiver_profond">Hiver Profond</option>
+            <option value="hiver_froid">Hiver Froid</option>
+            <option value="hiver_vif">Hiver Vif</option>
+          </select>
+        </div>
+
+        <div class="form-group">
+          <label for="outfit-style">Style vestimentaire</label>
+          <select id="outfit-style" name="style">
+            <option value="Casual">Casual</option>
+            <option value="Minimaliste">Minimaliste</option>
+            <option value="Chic">Chic</option>
+            <option value="Old Money">Old Money</option>
+            <option value="Streetwear">Streetwear</option>
+            <option value="Techwear">Techwear</option>
+            <option value="Y2K">Y2K</option>
+          </select>
+        </div>
+
+        <div class="form-group">
+          <label for="outfit-occasion">Occasion</label>
+          <select id="outfit-occasion" name="occasion">
+            <option value="Quotidien">Quotidien</option>
+            <option value="Travail">Travail</option>
+            <option value="Université">Université</option>
+            <option value="Rendez-vous">Rendez-vous</option>
+            <option value="Soirée">Soirée</option>
+            <option value="Vacances">Vacances</option>
+          </select>
+        </div>
+
+        <div class="form-group">
+          <label for="outfit-budget">Budget total indicatif (€)</label>
+          <input type="number" id="outfit-budget" name="budget" min="40" max="3000" value="180" />
+        </div>
+
+        <div class="form-group">
+          <label for="outfit-liked">Couleurs appréciées (séparées par virgule)</label>
+          <input type="text" id="outfit-liked" placeholder="Ex: Bleu, Vert, Ivoire" />
+        </div>
+
+        <div class="form-group">
+          <label for="outfit-rejected">Couleurs refusées (séparées par virgule)</label>
+          <input type="text" id="outfit-rejected" placeholder="Ex: Jaune, Orange" />
+        </div>
+
+        <div class="form-actions full-width">
+          <button type="submit" class="btn btn-primary">Générer mes tenues</button>
+          <button type="button" id="outfit-variant-btn" class="btn btn-outline">Proposer d'autres variantes</button>
+        </div>
+      </form>
+
+      <div id="outfits-container" class="cards-grid" aria-live="polite"></div>
+    </section>
+
+    <!-- 3. SECTION DRESSING VIRTUEL -->
+    <section id="dressing" class="card section-block" aria-labelledby="title-dressing">
+      <div class="section-header">
+        <h2 id="title-dressing">Mon Dressing Virtuel</h2>
+        <p class="subtitle">
+          Photographiez et enregistrez vos propres vêtements pour générer des tenues à partir de ce que vous possédez déjà.
+        </p>
+      </div>
+
+      <div id="wardrobe-guest-notice" class="notice-banner">
+        Connectez-vous à votre compte pour enregistrer vos vêtements et composer des tenues depuis votre dressing.
+      </div>
+
+      <div id="wardrobe-authenticated-area" class="hidden">
+        <form id="wardrobe-form" class="form-grid">
+          <div class="form-group">
+            <label for="wardrobe-name">Nom du vêtement *</label>
+            <input type="text" id="wardrobe-name" required placeholder="Ex: Chemise lin bleu ciel" />
+          </div>
+          <div class="form-group">
+            <label for="wardrobe-category">Catégorie *</label>
+            <select id="wardrobe-category">
+              <option value="Haut">Haut</option>
+              <option value="Bas">Bas</option>
+              <option value="Chaussures">Chaussures</option>
+              <option value="Veste">Veste</option>
+              <option value="Accessoire">Accessoire</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label for="wardrobe-color-hex">Couleur principale (détectée ou corrigée)</label>
+            <input type="color" id="wardrobe-color-hex" value="#457B9D" />
+          </div>
+          <div class="form-group">
+            <label for="wardrobe-color-name">Nom de la couleur</label>
+            <input type="text" id="wardrobe-color-name" value="Bleu Acier" />
+          </div>
+          <div class="form-group">
+            <label for="wardrobe-style">Style</label>
+            <select id="wardrobe-style">
+              <option value="Casual">Casual</option>
+              <option value="Minimaliste">Minimaliste</option>
+              <option value="Chic">Chic</option>
+              <option value="Old Money">Old Money</option>
+              <option value="Streetwear">Streetwear</option>
+              <option value="Techwear">Techwear</option>
+              <option value="Y2K">Y2K</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label for="wardrobe-photo">Photo du vêtement (extrait automatiquement la couleur)</label>
+            <input type="file" id="wardrobe-photo" accept="image/jpeg,image/png,image/webp" />
+          </div>
+          <div class="form-actions full-width">
+            <button type="submit" class="btn btn-primary">Ajouter à mon dressing</button>
+            <button type="button" id="generate-wardrobe-outfits-btn" class="btn btn-outline">
+              Composer des tenues avec mes vêtements
+            </button>
+          </div>
+        </form>
+
+        <div class="filter-bar">
+          <input type="search" id="wardrobe-search" placeholder="Rechercher dans mon dressing..." aria-label="Rechercher un vêtement" />
+          <select id="wardrobe-filter-category" aria-label="Filtrer par catégorie">
+            <option value="">Toutes les catégories</option>
+            <option value="Haut">Hauts</option>
+            <option value="Bas">Bas</option>
+            <option value="Chaussures">Chaussures</option>
+            <option value="Veste">Vestes</option>
+            <option value="Accessoire">Accessoires</option>
+          </select>
+        </div>
+
+        <div id="wardrobe-list" class="cards-grid"></div>
+        <div id="wardrobe-outfits-result" class="cards-grid"></div>
+      </div>
+    </section>
+
+    <!-- 4. SECTION BOUTIQUE RÉELLE -->
+    <section id="boutique" class="card section-block" aria-labelledby="title-boutique">
+      <div class="section-header">
+        <h2 id="title-boutique">Sélection de Vêtements Réellement Achetables</h2>
+        <p class="subtitle">
+          Produits issus de catalogues vérifiés avec liens directs vers les boutiques officielles. Aucun produit ni prix n'est inventé.
+        </p>
+      </div>
+
+      <div class="filter-bar">
+        <select id="shop-filter-category" aria-label="Catégorie produit">
+          <option value="">Toutes catégories</option>
+          <option value="Haut">Hauts</option>
+          <option value="Bas">Bas</option>
+          <option value="Chaussures">Chaussures</option>
+        </select>
+        <select id="shop-filter-style" aria-label="Style produit">
+          <option value="">Tous styles</option>
+          <option value="Minimaliste">Minimaliste</option>
+          <option value="Old Money">Old Money</option>
+          <option value="Chic">Chic</option>
+          <option value="Streetwear">Streetwear</option>
+          <option value="Casual">Casual</option>
+        </select>
+        <input type="number" id="shop-filter-budget" placeholder="Prix max (€)" aria-label="Prix maximum" />
+        <button type="button" id="shop-filter-btn" class="btn btn-outline">Filtrer</button>
+      </div>
+
+      <div id="shop-products-grid" class="cards-grid"></div>
+    </section>
+
+    <!-- 5. SECTION TARIFS & STRIPE -->
+    <section id="tarifs" class="card section-block" aria-labelledby="title-tarifs">
+      <div class="section-header">
+        <h2 id="title-tarifs">Offres & Tarifs (Hypothèses commerciales)</h2>
+        <p id="stripe-status-banner" class="subtitle"></p>
+      </div>
+
+      <div class="cards-grid pricing-grid">
+        <article class="price-card">
+          <h3>Découverte</h3>
+          <p class="price-tag">Gratuit</p>
+          <ul>
+            <li>Analyse colorimétrique locale</li>
+            <li>Aperçu des couleurs principales</li>
+            <li>Génération d'outfits de base</li>
+          </ul>
+        </article>
+
+        <article class="price-card featured">
+          <h3>Abonnement Premium</h3>
+          <p class="price-tag">5,99 € <small>/ mois (tarif envisagé)</small></p>
+          <ul>
+            <li>Analyses illimitées et historique complet</li>
+            <li>Dressing virtuel illimité & tenues personnalisées</li>
+            <li>Filtres avancés et variantes illimitées</li>
+          </ul>
+          <button type="button" class="btn btn-primary subscribe-btn" data-offer="subscription">
+            Souscrire au Premium
+          </button>
+        </article>
+
+        <article class="price-card">
+          <h3>Analyse à l'unité</h3>
+          <p class="price-tag">9,99 € <small>sans abonnement (tarif envisagé)</small></p>
+          <ul>
+            <li>Rapport colorimétrique complet 12 saisons</li>
+            <li>Explications détaillées CIELAB</li>
+            <li>Paiement unique sans renouvellement</li>
+          </ul>
+          <button type="button" class="btn btn-outline subscribe-btn" data-offer="single">
+            Acheter une analyse unique
+          </button>
+        </article>
+      </div>
+    </section>
+  </main>
+
+  <!-- MODALE CONNEXION / INSCRIPTION -->
+  <div id="auth-modal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="auth-modal-title">
+    <div class="modal-card">
+      <div class="modal-header">
+        <h2 id="auth-modal-title">Accéder à votre espace ColorFit</h2>
+        <button type="button" id="close-auth-modal" class="close-btn" aria-label="Fermer">&times;</button>
+      </div>
+
+      <div class="tabs">
+        <button type="button" id="tab-login" class="tab-btn active">Connexion</button>
+        <button type="button" id="tab-register" class="tab-btn">Créer un compte</button>
+      </div>
+
+      <div id="auth-error-box" class="error-box hidden" role="alert"></div>
+
+      <form id="auth-form">
+        <div class="form-group">
+          <label for="auth-email">Adresse email</label>
+          <input type="email" id="auth-email" required autocomplete="email" placeholder="prenom.nom@exemple.fr" />
+        </div>
+        <div class="form-group">
+          <label for="auth-password">Mot de passe (8 caractères minimum)</label>
+          <input type="password" id="auth-password" required minlength="8" autocomplete="current-password" />
+        </div>
+        <button type="submit" id="auth-submit-btn" class="btn btn-primary full-width">Se connecter</button>
+      </form>
+    </div>
+  </div>
+
+  <!-- MODALE MON COMPTE (Ne déclenche JAMAIS de déconnexion à l'ouverture) -->
+  <div id="account-modal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="account-modal-title">
+    <div class="modal-card modal-lg">
+      <div class="modal-header">
+        <h2 id="account-modal-title">Mon espace personnel</h2>
+        <button type="button" id="close-account-modal" class="close-btn" aria-label="Fermer">&times;</button>
+      </div>
+
+      <div id="account-details-content" class="account-grid"></div>
+
+      <hr />
+      <div class="account-actions-bar">
+        <a href="/api/account/export" class="btn btn-outline" download>Exporter mes données (RGPD JSON)</a>
+        <button type="button" id="open-billing-portal-btn" class="btn btn-outline">Gérer mon abonnement Stripe</button>
+        <button type="button" id="explicit-logout-btn" class="btn btn-warning">Se déconnecter</button>
+        <button type="button" id="delete-account-btn" class="btn btn-danger">Supprimer mon compte</button>
+      </div>
+    </div>
+  </div>
+
+  <footer class="site-footer" role="contentinfo">
+    <div class="container footer-inner">
+      <p>&copy; 2026 ColorFit — Application de conseil vestimentaire et d'analyse colorimétrique.</p>
+      <p class="legal-note">
+        <strong>RGPD & Confidentialité :</strong> Vos photos d'analyse sont échantillonnées dans votre navigateur et ne sont jamais vendues ni utilisées pour de la reconnaissance faciale. Avant mise en production commerciale, complétez les mentions légales (raison sociale, SIRET, coordonnées de l'hébergeur et médiateur de la consommation) avec validation juridique.
+      </p>
+    </div>
+  </footer>
+
+  <script src="/app.js"></script>
+</body>
+</html>
