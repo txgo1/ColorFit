@@ -1,5 +1,10 @@
 node_modules/
-.vscode/
-.DS_Store
-*.env
-build/
+.env
+.env.production
+*.tgz
+*.zip
+data/*.db
+data/*.db-shm
+data/*.db-wal
+data/backups/
+npm-debug.log*
