@@ -1,20 +1,25 @@
 {
   "name": "colorfit",
-  "version": "1.0.0",
-  "private": true,
-  "description": "ColorFit - secure AI-assisted personal color and outfit advisor",
-  "type": "module",
-  "scripts": {"start":"node server/index.js","dev":"node --watch server/index.js","catalog:sync":"node scripts/sync-product-catalog.js"},
-  "engines": {"node": ">=24 <25"},
+  "version": "2.0.0",
+  "description": "Application SaaS d'analyse colorimétrique, dressing virtuel et recommandation vestimentaire personnalisée",
+  "main": "server/index.js",
+  "scripts": {
+    "start": "node server/index.js",
+    "dev": "node --watch server/index.js",
+    "test": "NODE_ENV=test node --test tests/colorfit.test.js",
+    "sync-catalog": "node scripts/sync-product-catalog.js",
+    "build-zip": "node scripts/build-zip.js"
+  },
+  "engines": {
+    "node": ">=18.18.0"
+  },
   "dependencies": {
-    "bcryptjs":"^3.0.2",
-    "better-sqlite3":"^11.10.0",
-    "compression":"^1.8.1",
-    "dotenv":"^17.2.2",
-    "express":"^5.1.0",
-    "express-rate-limit":"^8.1.0",
-    "helmet":"^8.1.0",
-    "stripe":"^18.5.0",
-    "zod":"^4.1.5"
-  }
+    "better-sqlite3": "^11.3.0",
+    "dotenv": "^16.4.5",
+    "express": "^4.21.0",
+    "helmet": "^7.1.0",
+    "stripe": "^16.12.0"
+  },
+  "license": "UNLICENSED",
+  "private": true
 }
