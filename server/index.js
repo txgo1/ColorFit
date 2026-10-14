@@ -1,380 +1,850 @@
-import 'dotenv/config';
-import express from 'express';
-import helmet from 'helmet';
-import compression from 'compression';
-import rateLimit from 'express-rate-limit';
-import bcrypt from 'bcryptjs';
-import Database from 'better-sqlite3';
-import Stripe from 'stripe';
-import crypto from 'node:crypto';
-import dns from 'node:dns/promises';
-import path from 'node:path';
-import fs from 'node:fs';
-import { fileURLToPath } from 'node:url';
-import { z } from 'zod';
+'use strict';
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const root = path.resolve(__dirname, '..');
-const dataDir = path.resolve(root, 'data');
-fs.mkdirSync(dataDir, { recursive: true });
-const productCatalogPath = path.join(dataDir, 'products.json');
-const productCatalog = fs.existsSync(productCatalogPath) ? JSON.parse(fs.readFileSync(productCatalogPath, 'utf8')) : [];
-const productCatalogMetaPath = path.join(dataDir, 'catalog-meta.json');
-const productCatalogMeta = fs.existsSync(productCatalogMetaPath) ? JSON.parse(fs.readFileSync(productCatalogMetaPath, 'utf8')) : {};
+require('dotenv').config();
+const path = require('path');
+const fs = require('fs');
+const crypto = require('crypto');
+const express = require('express');
+const helmet = require('helmet');
+const { initDatabase } = require('./db');
+const { validateEmailAddress, normalizeEmail } = require('./emailValidator');
+const { analyzeImageGrid, SEASON_PROFILES } = require('./colorimetry');
+const {
+  SUPPORTED_STYLES,
+  SUPPORTED_OCCASIONS,
+  generatePersonalizedOutfits,
+  generateWardrobeOutfits
+} = require('./outfits');
 
-const PORT = Number(process.env.PORT || 3000);
-const NODE_ENV = process.env.NODE_ENV || 'development';
-const originInput = process.env.APP_ORIGIN || `http://localhost:${PORT}`;
-let parsedOrigin;
-try { parsedOrigin = new URL(originInput); } catch { throw new Error('APP_ORIGIN must be a valid URL.'); }
-if (parsedOrigin.pathname !== '/' || parsedOrigin.search || parsedOrigin.hash) throw new Error('APP_ORIGIN must contain only the site origin, without a path.');
-const ORIGIN = parsedOrigin.origin;
-const sessionSecret = process.env.SESSION_SECRET;
-if (NODE_ENV === 'production') {
-  if (!sessionSecret || sessionSecret.length < 32) throw new Error('Production requires a stable SESSION_SECRET of at least 32 characters.');
-  if (parsedOrigin.protocol !== 'https:') throw new Error('Production requires an HTTPS APP_ORIGIN.');
-}
-const SESSION_SECRET = sessionSecret || crypto.randomBytes(48).toString('base64url');
-const databasePath = process.env.DB_PATH ? path.resolve(process.env.DB_PATH) : path.join(dataDir, 'colorfit.db');
-if (NODE_ENV === 'production' && (!process.env.DB_PATH || !path.isAbsolute(process.env.DB_PATH))) {
-  throw new Error('Production requires an absolute DB_PATH on persistent storage.');
-}
-fs.mkdirSync(path.dirname(databasePath), { recursive: true });
-const db = new Database(databasePath);
-db.pragma('journal_mode = WAL');
-db.pragma('foreign_keys = ON');
-db.pragma('busy_timeout = 5000');
-db.exec(`
-CREATE TABLE IF NOT EXISTS users (
- id TEXT PRIMARY KEY,
- email TEXT NOT NULL UNIQUE,
- password_hash TEXT NOT NULL,
- plan TEXT NOT NULL DEFAULT 'free' CHECK(plan IN ('free','premium')),
- stripe_customer_id TEXT,
- created_at INTEGER NOT NULL,
- updated_at INTEGER NOT NULL
-);
-CREATE TABLE IF NOT EXISTS analyses (
- id TEXT PRIMARY KEY,
- user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
- profile TEXT NOT NULL,
- palette_json TEXT NOT NULL,
- preferences_json TEXT NOT NULL,
- created_at INTEGER NOT NULL
-);
-CREATE TABLE IF NOT EXISTS entitlements (
- id TEXT PRIMARY KEY,
- user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
- stripe_subscription_id TEXT UNIQUE,
- status TEXT NOT NULL,
- current_period_end INTEGER,
- created_at INTEGER NOT NULL,
- updated_at INTEGER NOT NULL
-);
-`);
+function createApp(customConfig = {}) {
+  const isProd = (customConfig.nodeEnv || process.env.NODE_ENV) === 'production';
+  const sessionSecret = customConfig.sessionSecret || process.env.SESSION_SECRET || '';
 
-const paymentMode = process.env.PAYMENTS_MODE || 'test';
-const stripeFields = [process.env.STRIPE_SECRET_KEY, process.env.STRIPE_WEBHOOK_SECRET, process.env.STRIPE_PRICE_ID];
-const stripeIsConfigured = stripeFields.every(Boolean);
-if (NODE_ENV === 'production') {
-  if (!['test', 'live'].includes(paymentMode)) throw new Error('PAYMENTS_MODE must be "test" or "live".');
-  if (!stripeIsConfigured) throw new Error('Production requires Stripe secret, webhook, and price settings.');
-  const expectedKeyPrefix = paymentMode === 'live' ? 'sk_live_' : 'sk_test_';
-  if (!process.env.STRIPE_SECRET_KEY.startsWith(expectedKeyPrefix)) throw new Error(`PAYMENTS_MODE=${paymentMode} does not match STRIPE_SECRET_KEY.`);
-  if (!process.env.STRIPE_WEBHOOK_SECRET.startsWith('whsec_') || !process.env.STRIPE_PRICE_ID.startsWith('price_')) {
-    throw new Error('Stripe webhook and price settings appear invalid.');
+  if (isProd && (!sessionSecret || sessionSecret.length < 32 || sessionSecret.includes('change_me'))) {
+    throw new Error('[SECURITY CRITICAL] Refus de démarrer en production : SESSION_SECRET est absent, trop court (< 32 caractères) ou non modifié.');
   }
-}
-const stripe = process.env.STRIPE_SECRET_KEY ? new Stripe(process.env.STRIPE_SECRET_KEY) : null;
-const app = express();
-app.disable('x-powered-by');
-app.set('trust proxy', 1);
-app.use(helmet({
-  contentSecurityPolicy: {
-    directives: {
-      defaultSrc: ["'self'"],
-      imgSrc: ["'self'", 'data:', 'blob:', 'https:'],
-      styleSrc: ["'self'", "'unsafe-inline'"],
-      scriptSrc: ["'self'"],
-      connectSrc: ["'self'", 'https://api.stripe.com'],
-      frameSrc: ["'self'", 'https://js.stripe.com', 'https://hooks.stripe.com'],
-      objectSrc: ["'none'"],
-      baseUri: ["'self'"],
-      formAction: ["'self'", 'https://checkout.stripe.com'],
-      frameAncestors: ["'none'"]
-    }
-  },
-  referrerPolicy: { policy: 'no-referrer' },
-  crossOriginOpenerPolicy: { policy: 'same-origin' },
-  crossOriginResourcePolicy: { policy: 'same-origin' }
-}));
-app.use(compression());
 
-// Stripe requires the raw body for signature verification. Keep this route before express.json().
-app.post('/api/stripe/webhook', express.raw({ type: 'application/json', limit: '256kb' }), async (req, res) => {
-  if (!stripe || !process.env.STRIPE_WEBHOOK_SECRET) return res.status(503).send('Payments not configured');
-  let event;
-  try { event = stripe.webhooks.constructEvent(req.body, req.headers['stripe-signature'], process.env.STRIPE_WEBHOOK_SECRET); }
-  catch { return res.status(400).send('Invalid signature'); }
-  try {
-    if (event.type === 'checkout.session.completed') {
-      const session = event.data.object;
-      const userId = session.metadata?.userId;
-      if (userId && session.subscription) {
-        const sub = await stripe.subscriptions.retrieve(session.subscription);
-        upsertEntitlement(userId, sub);
-        if (session.customer) db.prepare('UPDATE users SET stripe_customer_id=?, updated_at=? WHERE id=?').run(String(session.customer), now(), userId);
+  const db = initDatabase(customConfig.dbPath);
+  const app = express();
+
+  // Initialisation conditionnelle de Stripe
+  const stripeSecretKey = customConfig.stripeSecretKey ?? process.env.STRIPE_SECRET_KEY ?? '';
+  const stripeWebhookSecret = customConfig.stripeWebhookSecret ?? process.env.STRIPE_WEBHOOK_SECRET ?? '';
+  const pricePremiumMonthly = customConfig.pricePremiumMonthly ?? process.env.STRIPE_PRICE_PREMIUM_MONTHLY ?? '';
+  const priceSingleAnalysis = customConfig.priceSingleAnalysis ?? process.env.STRIPE_PRICE_SINGLE_ANALYSIS ?? '';
+  const stripeClient = customConfig.stripeClient || (stripeSecretKey ? require('stripe')(stripeSecretKey) : null);
+
+  // Sécurité HTTP via Helmet + Content Security Policy stricte
+  app.use(
+    helmet({
+      contentSecurityPolicy: {
+        directives: {
+          defaultSrc: ["'self'"],
+          scriptSrc: ["'self'"],
+          styleSrc: ["'self'", "'unsafe-inline'", 'https://fonts.googleapis.com'],
+          fontSrc: ["'self'", 'https://fonts.gstatic.com'],
+          imgSrc: ["'self'", 'data:', 'blob:', 'https://images.unsplash.com'],
+          connectSrc: ["'self'"],
+          frameAncestors: ["'none'"],
+          objectSrc: ["'none'"]
+        }
+      },
+      crossOriginEmbedderPolicy: false
+    })
+  );
+
+  // =========================================================================
+  // WEBHOOK STRIPE (Doit recevoir le corps brut avant express.json())
+  // =========================================================================
+  app.post('/api/billing/webhook', express.raw({ type: 'application/json', limit: '256kb' }), (req, res) => {
+    if (!stripeClient || !stripeWebhookSecret) {
+      return res.status(503).json({ error: 'Stripe Webhook non configuré sur ce serveur.' });
+    }
+
+    const signature = req.headers['stripe-signature'];
+    if (!signature) {
+      return res.status(400).json({ error: 'En-tête stripe-signature manquant.' });
+    }
+
+    let event;
+    try {
+      event = stripeClient.webhooks.constructEvent(req.body, signature, stripeWebhookSecret);
+    } catch (err) {
+      return res.status(400).json({ error: 'Signature de webhook invalide.' });
+    }
+
+    // Vérification d'idempotence atomique
+    const existingEvent = db.prepare('SELECT event_id FROM stripe_events WHERE event_id = ?').get(event.id);
+    if (existingEvent) {
+      return res.status(200).json({ received: true, duplicate: true });
+    }
+
+    const processWebhookTx = db.transaction(() => {
+      db.prepare('INSERT INTO stripe_events (event_id, event_type, event_created) VALUES (?, ?, ?)').run(
+        event.id,
+        event.type,
+        Number(event.created) || Math.floor(Date.now() / 1000)
+      );
+
+      const eventCreated = Number(event.created) || Math.floor(Date.now() / 1000);
+      const dataObj = event.data && event.data.object ? event.data.object : {};
+
+      if (event.type === 'checkout.session.completed') {
+        const userId = Number(dataObj.client_reference_id || (dataObj.metadata && dataObj.metadata.userId));
+        const purchaseMode = dataObj.mode;
+        if (userId) {
+          const user = db.prepare('SELECT id, subscription_updated_at FROM users WHERE id = ?').get(userId);
+          if (user && eventCreated >= user.subscription_updated_at) {
+            if (purchaseMode === 'subscription') {
+              db.prepare(`
+                UPDATE users
+                SET plan = 'premium',
+                    stripe_customer_id = COALESCE(?, stripe_customer_id),
+                    stripe_subscription_id = COALESCE(?, stripe_subscription_id),
+                    subscription_status = 'active',
+                    subscription_updated_at = ?,
+                    updated_at = datetime('now')
+                WHERE id = ?
+              `).run(dataObj.customer || null, dataObj.subscription || null, eventCreated, userId);
+            } else if (purchaseMode === 'payment') {
+              db.prepare(`
+                UPDATE users
+                SET single_analysis_credits = single_analysis_credits + 1,
+                    stripe_customer_id = COALESCE(?, stripe_customer_id),
+                    updated_at = datetime('now')
+                WHERE id = ?
+              `).run(dataObj.customer || null, userId);
+            }
+          }
+        }
+      } else if (event.type === 'customer.subscription.updated' || event.type === 'customer.subscription.deleted') {
+        const customerId = dataObj.customer;
+        const status = event.type === 'customer.subscription.deleted' ? 'canceled' : String(dataObj.status || 'canceled');
+        const isActive = status === 'active' || status === 'trialing';
+        const user = db.prepare('SELECT id, subscription_updated_at FROM users WHERE stripe_customer_id = ?').get(customerId);
+        if (user && eventCreated >= user.subscription_updated_at) {
+          db.prepare(`
+            UPDATE users
+            SET plan = ?,
+                subscription_status = ?,
+                subscription_updated_at = ?,
+                updated_at = datetime('now')
+            WHERE id = ?
+          `).run(isActive ? 'premium' : 'free', status, eventCreated, user.id);
+        }
+      } else if (event.type === 'invoice.payment_failed') {
+        const customerId = dataObj.customer;
+        const user = db.prepare('SELECT id, subscription_updated_at FROM users WHERE stripe_customer_id = ?').get(customerId);
+        if (user && eventCreated >= user.subscription_updated_at) {
+          db.prepare(`
+            UPDATE users
+            SET plan = 'free',
+                subscription_status = 'past_due',
+                subscription_updated_at = ?,
+                updated_at = datetime('now')
+            WHERE id = ?
+          `).run(eventCreated, user.id);
+        }
+      } else if (event.type === 'charge.refunded') {
+        const customerId = dataObj.customer;
+        const user = db.prepare('SELECT id FROM users WHERE stripe_customer_id = ?').get(customerId);
+        if (user) {
+          db.prepare(`
+            UPDATE users
+            SET plan = 'free',
+                subscription_status = 'refunded',
+                single_analysis_credits = MAX(0, single_analysis_credits - 1),
+                updated_at = datetime('now')
+            WHERE id = ?
+          `).run(user.id);
+        }
       }
-    }
-    if (event.type === 'customer.subscription.updated' || event.type === 'customer.subscription.created' || event.type === 'customer.subscription.deleted') {
-      const sub = event.data.object;
-      const userId = sub.metadata?.userId;
-      if (userId) upsertEntitlement(userId, sub);
-    }
-    return res.json({ received: true });
-  } catch { return res.status(500).send('Webhook processing failed'); }
-});
-
-app.use(express.json({ limit: '64kb' }));
-app.use(express.urlencoded({ extended: false, limit: '16kb' }));
-
-const apiLimiter = rateLimit({ windowMs: 15 * 60 * 1000, limit: 180, standardHeaders: 'draft-8', legacyHeaders: false });
-const authLimiter = rateLimit({ windowMs: 15 * 60 * 1000, limit: 12, standardHeaders: 'draft-8', legacyHeaders: false, message: { error: 'Trop de tentatives. Réessaie plus tard.' } });
-app.use('/api/', apiLimiter);
-
-const productColorRules = [
-  ['black', /black|charcoal|onyx/i], ['white', /white|ivory|cream|off.?white/i],
-  ['brown', /brown|mocha|camel|caramel|tan|taupe|coffee|chocolate|khaki/i],
-  ['red', /red|burgundy|wine|scarlet|berry/i], ['pink', /pink|rose|blush|fuchsia/i],
-  ['orange', /orange|coral|peach|apricot|rust|terracotta/i], ['yellow', /yellow|gold|mustard/i],
-  ['green', /green|olive|sage|moss|matcha|army/i], ['blue', /blue|navy|teal|turquoise|aqua/i],
-  ['purple', /purple|violet|lavender|lilac/i], ['gray', /gray|grey|silver|charcoal/i]
-];
-function colorFamiliesFromLabel(label) { return productColorRules.filter(([, pattern]) => pattern.test(label || '')).map(([family]) => family); }
-function colorFamiliesFromHex(hex) {
-  const n = Number.parseInt(hex.slice(1), 16), r = n >> 16, g = (n >> 8) & 255, b = n & 255;
-  const max = Math.max(r, g, b), min = Math.min(r, g, b), delta = max - min, light = (max + min) / 510;
-  if (light < .14) return ['black'];
-  if (light > .88 && delta < 45) return ['white'];
-  if (delta < 28) return light < .43 ? ['gray','black'] : ['gray','white'];
-  let hue = 0;
-  if (max === r) hue = 60 * (((g - b) / delta) % 6);
-  else if (max === g) hue = 60 * ((b - r) / delta + 2);
-  else hue = 60 * ((r - g) / delta + 4);
-  if (hue < 0) hue += 360;
-  if (hue < 12 || hue >= 345) return ['red','pink'];
-  if (hue < 28) return ['orange','brown'];
-  if (hue < 48) return ['orange','yellow','brown'];
-  if (hue < 72) return ['yellow','green'];
-  if (hue < 165) return ['green'];
-  if (hue < 205) return ['blue','green'];
-  if (hue < 255) return ['blue'];
-  if (hue < 290) return ['purple'];
-  if (hue < 330) return ['pink','purple'];
-  return ['pink','red'];
-}
-app.get('/api/products', (req, res) => {
-  const palette = String(req.query.palette || '').split(',').filter(hex => /^#[0-9a-f]{6}$/i.test(hex)).slice(0, 12);
-  const preferredFamilies = new Set(palette.flatMap(colorFamiliesFromHex));
-  const budgetCaps = { '€': 45, '€€': 90, '€€€': 160 };
-  const budget = String(req.query.budget || '');
-  const cap = budgetCaps[budget] || Infinity; // Catalog prices are USD; caps are approximate budget bands.
-  const requestedLimit = Number.parseInt(req.query.limit || '12', 10);
-  const limit = Number.isFinite(requestedLimit) ? Math.max(1, Math.min(24, requestedLimit)) : 12;
-  const products = productCatalog.flatMap(product => {
-    const variants = (product.variants || []).filter(variant => variant.price_usd <= cap);
-    if (!variants.length) return [];
-    const variant = variants.map(item => ({ ...item, families: colorFamiliesFromLabel(item.color) }))
-      .map(item => ({ ...item, colorScore: item.families.filter(family => preferredFamilies.has(family)).length }))
-      .sort((a, b) => b.colorScore - a.colorScore)[0];
-    return [{ id: product.id, title: product.title, type: product.type, url: product.url, image: product.image,
-      price: variant.price_usd, currency: 'USD', color: variant.color, size: variant.size,
-      colorMatch: preferredFamilies.size > 0 && variant.colorScore > 0, colorScore: variant.colorScore }];
-  });
-  products.sort((a, b) => b.colorScore - a.colorScore);
-  const matches = products.filter(product => product.colorMatch);
-  const results = (matches.length >= 3 ? matches : products).slice(0, limit);
-  res.setHeader('Cache-Control', 'public, max-age=300');
-  res.json({ products: results, matchedPalette: matches.length >= 3, currency: 'USD', source: 'Livostyle', syncedAt: productCatalogMeta.syncedAt || null });
-});
-
-function now() { return Date.now(); }
-function id() { return crypto.randomUUID(); }
-function sign(value) {
-  const mac = crypto.createHmac('sha256', SESSION_SECRET).update(value).digest('base64url');
-  return `${value}.${mac}`;
-}
-function verify(token) {
-  if (!token) return null;
-  const [value, mac] = token.split('.');
-  if (!value || !mac || mac.length !== 43) return null;
-  const expected = crypto.createHmac('sha256', SESSION_SECRET).update(value).digest('base64url');
-  if (!crypto.timingSafeEqual(Buffer.from(mac), Buffer.from(expected))) return null;
-  const [userId, exp] = value.split(':');
-  if (!userId || Number(exp) < now()) return null;
-  return userId;
-}
-function setSession(res, userId) {
-  const token = sign(`${userId}:${now() + 7 * 24 * 60 * 60 * 1000}`);
-  const attrs = `HttpOnly; Path=/; SameSite=Lax; Max-Age=${7 * 24 * 60 * 60}${process.env.NODE_ENV === 'production' ? '; Secure' : ''}`;
-  res.setHeader('Set-Cookie', `cf_session=${token}; ${attrs}`);
-}
-function clearSession(res) { res.setHeader('Set-Cookie', 'cf_session=; HttpOnly; Path=/; SameSite=Lax; Max-Age=0' + (process.env.NODE_ENV === 'production' ? '; Secure' : '')); }
-function auth(req, res, next) {
-  const userId = verify(req.headers.cookie?.split(';').map(x => x.trim()).find(x => x.startsWith('cf_session='))?.slice(11));
-  if (!userId) return res.status(401).json({ error: 'Authentification requise.' });
-  const user = db.prepare('SELECT id, email, plan FROM users WHERE id = ?').get(userId);
-  if (!user) return res.status(401).json({ error: 'Session invalide.' });
-  req.user = user; next();
-}
-function sameOrigin(req, res, next) {
-  if (['GET','HEAD','OPTIONS'].includes(req.method)) return next();
-  const origin = req.headers.origin;
-  if (origin && origin !== ORIGIN) return res.status(403).json({ error: 'Origine refusée.' });
-  next();
-}
-function upsertEntitlement(userId, sub) {
-  const status = ['active','trialing','past_due'].includes(sub.status) ? 'active' : 'inactive';
-  const end = sub.current_period_end ? sub.current_period_end * 1000 : null;
-  const existing = db.prepare('SELECT id FROM entitlements WHERE stripe_subscription_id = ?').get(sub.id);
-  const tx = db.transaction(() => {
-    if (existing) db.prepare('UPDATE entitlements SET status=?, current_period_end=?, updated_at=? WHERE stripe_subscription_id=?').run(status, end, now(), sub.id);
-    else db.prepare('INSERT INTO entitlements(id,user_id,stripe_subscription_id,status,current_period_end,created_at,updated_at) VALUES(?,?,?,?,?,?,?)').run(id(), userId, sub.id, status, end, now(), now());
-    db.prepare('UPDATE users SET plan=?, updated_at=? WHERE id=?').run(status === 'active' ? 'premium' : 'free', now(), userId);
-  }); tx();
-}
-
-const disposableDomains = new Set([
-  'mailinator.com','guerrillamail.com','10minutemail.com','temp-mail.org','tempmail.com',
-  'yopmail.com','trashmail.com','getnada.com','dispostable.com','maildrop.cc'
-]);
-const commonEmailDomains = [
-  'gmail.com','googlemail.com','outlook.com','hotmail.com','live.com','yahoo.com','yahoo.fr',
-  'icloud.com','proton.me','protonmail.com','orange.fr','wanadoo.fr','laposte.net','free.fr',
-  'sfr.fr','gmx.com','gmx.fr','zoho.com'
-];
-const credentials = z.object({
-  email: z.string().trim().email().max(254).transform(v => v.toLowerCase()),
-  password: z.string().min(10).max(128)
-});
-function emailDomainSuggestion(domain) {
-  for (const known of commonEmailDomains) {
-    if (domain === known) continue;
-    if (domain.length === known.length && [...domain].filter((char, i) => char !== known[i]).length === 1) return known;
-    if (Math.abs(domain.length - known.length) === 1) {
-      let i = 0, j = 0, differences = 0;
-      while (i < domain.length && j < known.length) {
-        if (domain[i] === known[j]) { i++; j++; continue; }
-        differences++;
-        if (differences > 1) break;
-        if (domain.length > known.length) i++; else j++;
-      }
-      if (i < domain.length || j < known.length) differences++;
-      if (differences === 1) return known;
-    }
-    // Catch adjacent transpositions such as "gmial.com" without flagging broad lookalikes.
-    if (domain.length === known.length) {
-      for (let i = 0; i < domain.length - 1; i++) {
-        if (domain[i] !== domain[i + 1] && domain[i] === known[i + 1] && domain[i + 1] === known[i] && domain.slice(0, i) === known.slice(0, i) && domain.slice(i + 2) === known.slice(i + 2)) return known;
-      }
-    }
-  }
-  return null;
-}
-async function validateEmailDomain(email) {
-  const domain = email.split('@')[1]?.toLowerCase();
-  if (!domain || disposableDomains.has(domain)) return false;
-  try {
-    const records = await dns.resolveMx(domain);
-    return records.some(r => Number.isFinite(r.priority));
-  } catch {
-    return false;
-  }
-}
-
-app.post('/api/auth/register', authLimiter, sameOrigin, async (req, res) => {
-  const parsed = credentials.safeParse(req.body);
-  if (!parsed.success) return res.status(400).json({ error: 'Email ou mot de passe invalide. Le mot de passe doit contenir au moins 10 caractères.' });
-  const { email, password } = parsed.data;
-  const [localPart, domain] = email.split('@');
-  const suggestedDomain = emailDomainSuggestion(domain);
-  if (suggestedDomain) {
-    const suggestion = `${localPart}@${suggestedDomain}`;
-    return res.status(400).json({ suggestion, error: `Vérifie le domaine de ton adresse : voulais-tu écrire ${suggestion} ?` });
-  }
-  if (!(await validateEmailDomain(email))) return res.status(400).json({ error: 'Cette adresse email semble invalide ou son domaine ne reçoit pas de messages.' });
-  if (db.prepare('SELECT 1 FROM users WHERE email = ?').get(email)) return res.status(409).json({ error: 'Un compte existe déjà avec cet email.' });
-  const userId = id();
-  const hash = await bcrypt.hash(password, 12);
-  db.prepare('INSERT INTO users(id,email,password_hash,created_at,updated_at) VALUES(?,?,?,?,?)').run(userId, email, hash, now(), now());
-  setSession(res, userId);
-  res.status(201).json({ user: { email, plan: 'free' } });
-});
-
-app.post('/api/auth/login', authLimiter, sameOrigin, async (req, res) => {
-  const parsed = credentials.safeParse(req.body);
-  if (!parsed.success) return res.status(400).json({ error: 'Identifiants invalides.' });
-  const user = db.prepare('SELECT * FROM users WHERE email = ?').get(parsed.data.email);
-  if (!user || !(await bcrypt.compare(parsed.data.password, user.password_hash))) return res.status(401).json({ error: 'Email ou mot de passe incorrect.' });
-  setSession(res, user.id); res.json({ user: { email: user.email, plan: user.plan } });
-});
-app.post('/api/auth/logout', sameOrigin, (req, res) => { clearSession(res); res.status(204).end(); });
-app.get('/api/me', auth, (req, res) => {
-  const count = db.prepare('SELECT COUNT(*) AS count FROM analyses WHERE user_id=?').get(req.user.id).count;
-  const latest = db.prepare('SELECT profile, created_at FROM analyses WHERE user_id=? ORDER BY created_at DESC LIMIT 1').get(req.user.id);
-  res.json({ user: req.user, analysisCount: count, latestAnalysis: latest || null });
-});
-
-app.post('/api/analysis', auth, sameOrigin, (req, res) => {
-  if (req.user.plan !== 'premium' && db.prepare('SELECT COUNT(*) c FROM analyses WHERE user_id=?').get(req.user.id).c >= 1) return res.status(402).json({ error: 'Ton analyse gratuite a déjà été utilisée.', upgrade: true });
-  const schema = z.object({ profile: z.string().min(2).max(80), palette: z.array(z.string().regex(/^#[0-9A-Fa-f]{6}$/)).min(4).max(20), preferences: z.object({ style: z.string().max(60), occasion: z.string().max(60), budget: z.string().max(20) }) });
-  const parsed = schema.safeParse(req.body); if (!parsed.success) return res.status(400).json({ error: 'Données d’analyse invalides.' });
-  db.prepare('INSERT INTO analyses(id,user_id,profile,palette_json,preferences_json,created_at) VALUES(?,?,?,?,?,?)').run(id(), req.user.id, parsed.data.profile, JSON.stringify(parsed.data.palette), JSON.stringify(parsed.data.preferences), now());
-  res.status(201).json({ ok: true });
-});
-
-app.get('/api/analysis/latest', auth, (req, res) => {
-  const row = db.prepare('SELECT profile, palette_json, preferences_json, created_at FROM analyses WHERE user_id=? ORDER BY created_at DESC LIMIT 1').get(req.user.id);
-  if (!row) return res.json({ analysis: null });
-  res.json({ analysis: { ...row, palette: JSON.parse(row.palette_json), preferences: JSON.parse(row.preferences_json) } });
-});
-
-app.post('/api/billing/checkout', auth, sameOrigin, async (req, res) => {
-  if (!stripe || !process.env.STRIPE_PRICE_ID) return res.status(503).json({ error: 'Paiement non configuré. Ajoute les clés Stripe côté serveur.' });
-  try {
-    const session = await stripe.checkout.sessions.create({
-      mode: 'subscription',
-      line_items: [{ price: process.env.STRIPE_PRICE_ID, quantity: 1 }],
-      success_url: `${ORIGIN}/?payment=success`,
-      cancel_url: `${ORIGIN}/?payment=cancelled`,
-      customer_email: req.user.email,
-      client_reference_id: req.user.id,
-      metadata: { userId: req.user.id },
-      subscription_data: { metadata: { userId: req.user.id } },
-      allow_promotion_codes: true,
-      billing_address_collection: 'auto'
     });
-    res.json({ url: session.url });
-  } catch (e) { res.status(500).json({ error: 'Impossible de créer la session de paiement.' }); }
-});
 
-app.post('/api/billing/portal', auth, sameOrigin, async (req, res) => {
-  if (!stripe) return res.status(503).json({ error: 'Paiement non configuré.' });
-  const customer = db.prepare('SELECT stripe_customer_id FROM users WHERE id=?').get(req.user.id)?.stripe_customer_id;
-  if (!customer) return res.status(404).json({ error: 'Aucun abonnement Stripe trouvé.' });
-  const portal = await stripe.billingPortal.sessions.create({ customer, return_url: ORIGIN });
-  res.json({ url: portal.url });
-});
+    processWebhookTx();
+    return res.status(200).json({ received: true });
+  });
 
-app.get('/health', (_req,res)=>res.json({ok:true}));
-app.get('/health/ready', (_req,res)=>{
-  let database = false;
-  try { database = db.prepare('SELECT 1 AS ok').get().ok === 1; } catch { database = false; }
-  const catalog = productCatalog.length > 0;
-  const billing = Boolean(stripe && process.env.STRIPE_WEBHOOK_SECRET && process.env.STRIPE_PRICE_ID);
-  const ready = database && catalog && billing;
-  res.status(ready ? 200 : 503).json({ ok: ready, checks: { database, catalog, billing } });
-});
-app.use(express.static(path.join(root, 'public'), { extensions: ['html'], maxAge: process.env.NODE_ENV === 'production' ? '1h' : 0 }));
-app.get('/{*splat}', (_req,res)=>res.sendFile(path.join(root,'public','index.html')));
-app.listen(PORT, ()=>console.log(`ColorFit running on ${ORIGIN}`));
+  // Limite de taille des payloads JSON
+  app.use(express.json({ limit: '2mb' }));
+
+  // =========================================================================
+  // UTILITAIRES CRYPTO, COOKIES, SESSIONS & RATE LIMITING
+  // =========================================================================
+  const rateLimitBuckets = new Map();
+  function rateLimit({ windowMs = 60000, max = 20, keyPrefix = 'global' }) {
+    return (req, res, next) => {
+      const ip = req.ip || req.socket.remoteAddress || 'unknown';
+      const key = `${keyPrefix}:${ip}`;
+      const now = Date.now();
+      const entry = rateLimitBuckets.get(key) || { count: 0, resetAt: now + windowMs };
+      if (now > entry.resetAt) {
+        entry.count = 0;
+        entry.resetAt = now + windowMs;
+      }
+      entry.count += 1;
+      rateLimitBuckets.set(key, entry);
+      if (entry.count > max) {
+        return res.status(429).json({
+          error: 'Trop de requêtes. Veuillez patienter quelques instants avant de réessayer.'
+        });
+      }
+      return next();
+    };
+  }
+
+  function hashPassword(password) {
+    const salt = crypto.randomBytes(16).toString('hex');
+    const derived = crypto.scryptSync(password, salt, 64).toString('hex');
+    return `${salt}:${derived}`;
+  }
+
+  function verifyPassword(password, storedHash) {
+    if (!storedHash || !storedHash.includes(':')) return false;
+    const [salt, keyHex] = storedHash.split(':');
+    const keyBuffer = Buffer.from(keyHex, 'hex');
+    const derivedBuffer = crypto.scryptSync(password, salt, 64);
+    if (keyBuffer.length !== derivedBuffer.length) return false;
+    return crypto.timingSafeEqual(keyBuffer, derivedBuffer);
+  }
+
+  function parseCookies(req) {
+    const raw = req.headers.cookie || '';
+    const out = {};
+    raw.split(';').forEach((pair) => {
+      const idx = pair.indexOf('=');
+      if (idx > 0) {
+        const k = pair.slice(0, idx).trim();
+        const v = decodeURIComponent(pair.slice(idx + 1).trim());
+        out[k] = v;
+      }
+    });
+    return out;
+  }
+
+  function setSessionCookie(res, sessionId, maxAgeSec = 7 * 24 * 3600) {
+    const parts = [
+      `colorfit_sid=${encodeURIComponent(sessionId)}`,
+      'Path=/',
+      'HttpOnly',
+      'SameSite=Lax',
+      `Max-Age=${maxAgeSec}`
+    ];
+    if (isProd) parts.push('Secure');
+    res.setHeader('Set-Cookie', parts.join('; '));
+  }
+
+  function clearSessionCookie(res) {
+    const parts = ['colorfit_sid=', 'Path=/', 'HttpOnly', 'SameSite=Lax', 'Max-Age=0'];
+    if (isProd) parts.push('Secure');
+    res.setHeader('Set-Cookie', parts.join('; '));
+  }
+
+  // Middleware de résolution de session
+  app.use((req, res, next) => {
+    const cookies = parseCookies(req);
+    const sid = cookies.colorfit_sid;
+    req.sessionUser = null;
+    req.sessionData = null;
+
+    if (sid) {
+      const now = Date.now();
+      const row = db.prepare(`
+        SELECT s.id AS session_id, s.csrf_token, s.expires_at,
+               u.id, u.email, u.email_verified, u.plan, u.single_analysis_credits,
+               u.subscription_status, u.preferences_json, u.privacy_settings_json, u.created_at
+        FROM sessions s
+        JOIN users u ON u.id = s.user_id
+        WHERE s.id = ?
+      `).get(sid);
+
+      if (row && row.expires_at > now) {
+        req.sessionData = { id: row.session_id, csrfToken: row.csrf_token, expiresAt: row.expires_at };
+        req.sessionUser = {
+          id: row.id,
+          email: row.email,
+          emailVerified: Boolean(row.email_verified),
+          plan: row.plan,
+          singleAnalysisCredits: row.single_analysis_credits,
+          subscriptionStatus: row.subscription_status,
+          preferences: JSON.parse(row.preferences_json || '{}'),
+          privacySettings: JSON.parse(row.privacy_settings_json || '{}'),
+          createdAt: row.created_at
+        };
+      } else if (row) {
+        db.prepare('DELETE FROM sessions WHERE id = ?').run(sid);
+      }
+    }
+    next();
+  });
+
+  function requireAuth(req, res, next) {
+    if (!req.sessionUser) {
+      return res.status(401).json({ error: 'Authentification requise. Veuillez vous connecter.' });
+    }
+    return next();
+  }
+
+  function requireCsrf(req, res, next) {
+    if (!req.sessionData) {
+      return res.status(401).json({ error: 'Session expirée ou absente.' });
+    }
+    const token = req.headers['x-csrf-token'] || (req.body && req.body._csrf);
+    if (!token || token !== req.sessionData.csrfToken) {
+      return res.status(403).json({ error: 'Jeton de sécurité CSRF invalide ou manquant.' });
+    }
+    return next();
+  }
+
+  // =========================================================================
+  // ROUTES D'AUTHENTIFICATION ET DE GESTION DE COMPTE (Section 3 & 11)
+  // =========================================================================
+  app.post('/api/auth/register', rateLimit({ windowMs: 60000, max: 10, keyPrefix: 'register' }), async (req, res) => {
+    try {
+      const { email, password } = req.body || {};
+      const emailCheck = await validateEmailAddress(email);
+      if (!emailCheck.valid) {
+        return res.status(400).json({ error: emailCheck.reason, suggestion: emailCheck.suggestion || null });
+      }
+
+      if (typeof password !== 'string' || password.length < 8 || password.length > 128) {
+        return res.status(400).json({ error: 'Le mot de passe doit contenir entre 8 et 128 caractères.' });
+      }
+
+      const existing = db.prepare('SELECT id FROM users WHERE email = ?').get(emailCheck.normalizedEmail);
+      if (existing) {
+        return res.status(409).json({ error: 'Un compte existe déjà avec cette adresse email.' });
+      }
+
+      const passwordHash = hashPassword(password);
+      const rawVerifyToken = crypto.randomBytes(32).toString('hex');
+      const verifyTokenHash = crypto.createHash('sha256').update(rawVerifyToken).digest('hex');
+      const verifyExpiresAt = Date.now() + 24 * 3600 * 1000;
+
+      const info = db.prepare(`
+        INSERT INTO users (email, password_hash, email_verified, verification_token_hash, verification_expires_at)
+        VALUES (?, ?, 0, ?, ?)
+      `).run(emailCheck.normalizedEmail, passwordHash, verifyTokenHash, verifyExpiresAt);
+
+      const userId = Number(info.lastInsertRowid);
+      const sessionId = crypto.randomBytes(32).toString('hex');
+      const csrfToken = crypto.randomBytes(24).toString('hex');
+      const now = Date.now();
+      const expiresAt = now + 7 * 24 * 3600 * 1000;
+
+      db.prepare(`
+        INSERT INTO sessions (id, user_id, csrf_token, expires_at, created_at, ip_address, user_agent)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+      `).run(sessionId, userId, csrfToken, expiresAt, now, req.ip || '', String(req.headers['user-agent'] || '').slice(0, 200));
+
+      setSessionCookie(res, sessionId);
+
+      const verifyUrl = `/api/auth/verify-email?token=${rawVerifyToken}`;
+      const responsePayload = {
+        ok: true,
+        message: 'Compte créé avec succès. Veuillez confirmer votre adresse email via le lien de vérification.',
+        csrfToken,
+        user: {
+          id: userId,
+          email: emailCheck.normalizedEmail,
+          emailVerified: false,
+          plan: 'free'
+        }
+      };
+
+      if (!isProd) {
+        responsePayload.devVerificationUrl = verifyUrl;
+      }
+
+      return res.status(201).json(responsePayload);
+    } catch (err) {
+      return res.status(500).json({ error: 'Erreur interne lors de l\'inscription.' });
+    }
+  });
+
+  app.get('/api/auth/verify-email', (req, res) => {
+    const rawToken = String(req.query.token || '').trim();
+    if (!rawToken) {
+      return res.status(400).json({ error: 'Lien de confirmation manquant.' });
+    }
+    const tokenHash = crypto.createHash('sha256').update(rawToken).digest('hex');
+    const user = db.prepare(`
+      SELECT id, email_verified, verification_expires_at
+      FROM users
+      WHERE verification_token_hash = ?
+    `).get(tokenHash);
+
+    if (!user) {
+      return res.status(400).json({ error: 'Lien de confirmation invalide ou déjà utilisé.' });
+    }
+    if (Date.now() > Number(user.verification_expires_at)) {
+      return res.status(410).json({ error: 'Ce lien de confirmation a expiré. Demandez un nouveau lien depuis Mon compte.' });
+    }
+
+    db.prepare(`
+      UPDATE users
+      SET email_verified = 1,
+          verification_token_hash = NULL,
+          verification_expires_at = NULL,
+          updated_at = datetime('now')
+      WHERE id = ?
+    `).run(user.id);
+
+    if (req.headers.accept && req.headers.accept.includes('application/json')) {
+      return res.json({ ok: true, message: 'Votre adresse email est désormais confirmée.' });
+    }
+    return res.redirect('/?email_verified=1');
+  });
+
+  app.post('/api/auth/login', rateLimit({ windowMs: 60000, max: 10, keyPrefix: 'login' }), (req, res) => {
+    const email = normalizeEmail(req.body && req.body.email);
+    const password = String((req.body && req.body.password) || '');
+
+    if (!email || !password) {
+      return res.status(400).json({ error: 'Veuillez renseigner votre email et votre mot de passe.' });
+    }
+
+    const user = db.prepare('SELECT * FROM users WHERE email = ?').get(email);
+    if (!user) {
+      return res.status(401).json({ error: 'Identifiants incorrects.' });
+    }
+
+    if (user.locked_until && Date.now() < user.locked_until) {
+      return res.status(429).json({
+        error: 'Compte temporairement verrouillé suite à plusieurs tentatives infructueuses. Réessayez dans quelques minutes.'
+      });
+    }
+
+    if (!verifyPassword(password, user.password_hash)) {
+      const attempts = (user.failed_login_attempts || 0) + 1;
+      const lockUntil = attempts >= 5 ? Date.now() + 10 * 60 * 1000 : 0;
+      db.prepare('UPDATE users SET failed_login_attempts = ?, locked_until = ? WHERE id = ?').run(attempts, lockUntil, user.id);
+      return res.status(401).json({ error: 'Identifiants incorrects.' });
+    }
+
+    // Réinitialiser le compteur d'échecs et effectuer une rotation de l'ID de session
+    db.prepare('UPDATE users SET failed_login_attempts = 0, locked_until = 0 WHERE id = ?').run(user.id);
+    if (req.sessionData && req.sessionData.id) {
+      db.prepare('DELETE FROM sessions WHERE id = ?').run(req.sessionData.id);
+    }
+
+    const sessionId = crypto.randomBytes(32).toString('hex');
+    const csrfToken = crypto.randomBytes(24).toString('hex');
+    const now = Date.now();
+    const expiresAt = now + 7 * 24 * 3600 * 1000;
+
+    db.prepare(`
+      INSERT INTO sessions (id, user_id, csrf_token, expires_at, created_at, ip_address, user_agent)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `).run(sessionId, user.id, csrfToken, expiresAt, now, req.ip || '', String(req.headers['user-agent'] || '').slice(0, 200));
+
+    setSessionCookie(res, sessionId);
+
+    return res.json({
+      ok: true,
+      csrfToken,
+      user: {
+        id: user.id,
+        email: user.email,
+        emailVerified: Boolean(user.email_verified),
+        plan: user.plan
+      }
+    });
+  });
+
+  app.post('/api/auth/logout', requireAuth, requireCsrf, (req, res) => {
+    db.prepare('DELETE FROM sessions WHERE id = ?').run(req.sessionData.id);
+    clearSessionCookie(res);
+    return res.json({ ok: true, message: 'Vous avez été déconnecté.' });
+  });
+
+  // Consultation de l'espace « Mon compte » (ne déclenche jamais de déconnexion)
+  app.get('/api/account/me', requireAuth, (req, res) => {
+    const userId = req.sessionUser.id;
+    const analysisCountRow = db.prepare('SELECT COUNT(*) AS count FROM color_analyses WHERE user_id = ?').get(userId);
+    const latestAnalysis = db.prepare(`
+      SELECT id, season_id, season_name, secondary_season_name, confidence_score, confidence_label,
+             metrics_json, palette_json, quality_warnings_json, created_at
+      FROM color_analyses
+      WHERE user_id = ?
+      ORDER BY id DESC
+      LIMIT 1
+    `).get(userId);
+
+    const wardrobeCountRow = db.prepare('SELECT COUNT(*) AS count FROM wardrobe_items WHERE user_id = ?').get(userId);
+
+    return res.json({
+      ok: true,
+      csrfToken: req.sessionData.csrfToken,
+      account: {
+        id: req.sessionUser.id,
+        email: req.sessionUser.email,
+        emailVerified: req.sessionUser.emailVerified,
+        plan: req.sessionUser.plan,
+        singleAnalysisCredits: req.sessionUser.singleAnalysisCredits,
+        subscriptionStatus: req.sessionUser.subscriptionStatus,
+        analysisCount: analysisCountRow ? analysisCountRow.count : 0,
+        wardrobeCount: wardrobeCountRow ? wardrobeCountRow.count : 0,
+        latestAnalysis: latestAnalysis ? {
+          id: latestAnalysis.id,
+          seasonId: latestAnalysis.season_id,
+          seasonName: latestAnalysis.season_name,
+          secondarySeasonName: latestAnalysis.secondary_season_name,
+          confidenceScore: latestAnalysis.confidence_score,
+          confidenceLabel: latestAnalysis.confidence_label,
+          metrics: JSON.parse(latestAnalysis.metrics_json || '{}'),
+          palette: JSON.parse(latestAnalysis.palette_json || '{}'),
+          createdAt: latestAnalysis.created_at
+        } : null,
+        preferences: req.sessionUser.preferences,
+        privacySettings: req.sessionUser.privacySettings,
+        createdAt: req.sessionUser.createdAt
+      }
+    });
+  });
+
+  app.put('/api/account/preferences', requireAuth, requireCsrf, (req, res) => {
+    const prefs = req.body && typeof req.body === 'object' ? req.body : {};
+    const sanitized = {
+      style: SUPPORTED_STYLES.includes(prefs.style) ? prefs.style : 'Casual',
+      occasion: SUPPORTED_OCCASIONS.includes(prefs.occasion) ? prefs.occasion : 'Quotidien',
+      budget: Math.max(30, Math.min(5000, Number(prefs.budget) || 180)),
+      likedColors: Array.isArray(prefs.likedColors) ? prefs.likedColors.slice(0, 10).map(String) : [],
+      rejectedColors: Array.isArray(prefs.rejectedColors) ? prefs.rejectedColors.slice(0, 10).map(String) : [],
+      preferredBrands: Array.isArray(prefs.preferredBrands) ? prefs.preferredBrands.slice(0, 10).map(String) : []
+    };
+
+    db.prepare(`
+      UPDATE users
+      SET preferences_json = ?, updated_at = datetime('now')
+      WHERE id = ?
+    `).run(JSON.stringify(sanitized), req.sessionUser.id);
+
+    return res.json({ ok: true, preferences: sanitized });
+  });
+
+  app.put('/api/account/privacy', requireAuth, requireCsrf, (req, res) => {
+    const body = req.body || {};
+    const privacy = {
+      saveHistory: Boolean(body.saveHistory ?? true),
+      analyticsConsent: Boolean(body.analyticsConsent ?? false),
+      marketingConsent: Boolean(body.marketingConsent ?? false)
+    };
+
+    db.prepare(`
+      UPDATE users
+      SET privacy_settings_json = ?, updated_at = datetime('now')
+      WHERE id = ?
+    `).run(JSON.stringify(privacy), req.sessionUser.id);
+
+    return res.json({ ok: true, privacySettings: privacy });
+  });
+
+  // Export RGPD portable de toutes les données personnelles de l'utilisateur
+  app.get('/api/account/export', requireAuth, (req, res) => {
+    const userId = req.sessionUser.id;
+    const analyses = db.prepare('SELECT * FROM color_analyses WHERE user_id = ? ORDER BY id DESC').all(userId);
+    const wardrobe = db.prepare('SELECT * FROM wardrobe_items WHERE user_id = ? ORDER BY id DESC').all(userId);
+
+    const exportBundle = {
+      exportedAt: new Date().toISOString(),
+      service: 'ColorFit',
+      retentionPolicy: {
+        unverifiedAccounts: '7 jours',
+        savedAnalyses: 'Jusqu\'à suppression par l\'utilisateur ou clôture du compte',
+        uploadedPhotos: 'Traitement en mémoire locale/éphémère, non conservées sur nos serveurs pour la colorimétrie'
+      },
+      user: req.sessionUser,
+      analyses,
+      wardrobe
+    };
+
+    res.setHeader('Content-Disposition', `attachment; filename="colorfit-rgpd-export-${userId}.json"`);
+    return res.json(exportBundle);
+  });
+
+  // Suppression totale du compte et des données associées (RGPD Droit à l'effacement)
+  app.delete('/api/account', requireAuth, requireCsrf, (req, res) => {
+    const userId = req.sessionUser.id;
+    db.prepare('DELETE FROM users WHERE id = ?').run(userId);
+    clearSessionCookie(res);
+    return res.json({ ok: true, message: 'Votre compte et toutes vos données associées ont été définitivement supprimés.' });
+  });
+
+  // =========================================================================
+  // ANALYSE COLORIMÉTRIQUE ET HISTORIQUE
+  // =========================================================================
+  app.post('/api/colorimetry/analyze', rateLimit({ windowMs: 60000, max: 15, keyPrefix: 'analyze' }), (req, res) => {
+    const result = analyzeImageGrid(req.body);
+    if (!result.ok) {
+      return res.status(422).json(result);
+    }
+
+    // Si l'utilisateur est connecté et autorise l'enregistrement de son historique
+    if (req.sessionUser && req.sessionUser.privacySettings.saveHistory !== false) {
+      const info = db.prepare(`
+        INSERT INTO color_analyses (
+          user_id, season_id, season_name, secondary_season_id, secondary_season_name,
+          confidence_score, confidence_label, metrics_json, palette_json, quality_warnings_json
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        req.sessionUser.id,
+        result.seasonId,
+        result.seasonName,
+        result.secondarySeason ? result.secondarySeason.id : null,
+        result.secondarySeason ? result.secondarySeason.name : null,
+        result.confidence.score,
+        result.confidence.label,
+        JSON.stringify(result.metrics),
+        JSON.stringify(result.profile),
+        JSON.stringify(result.qualityWarnings || [])
+      );
+      result.analysisId = Number(info.lastInsertRowid);
+    }
+
+    return res.json(result);
+  });
+
+  app.delete('/api/analyses/:id', requireAuth, requireCsrf, (req, res) => {
+    const analysisId = Number(req.params.id);
+    const info = db.prepare('DELETE FROM color_analyses WHERE id = ? AND user_id = ?').run(analysisId, req.sessionUser.id);
+    if (info.changes === 0) {
+      return res.status(404).json({ error: 'Analyse introuvable ou accès refusé.' });
+    }
+    return res.json({ ok: true });
+  });
+
+  // =========================================================================
+  // RECOMMANDATIONS D'OUTFITS
+  // =========================================================================
+  app.post('/api/outfits/generate', (req, res) => {
+    const outfits = generatePersonalizedOutfits(req.body || {});
+    return res.json({ ok: true, outfits });
+  });
+
+  // =========================================================================
+  // DRESSING VIRTUEL (Isolation stricte par utilisateur)
+  // =========================================================================
+  app.get('/api/wardrobe', requireAuth, (req, res) => {
+    const items = db.prepare('SELECT * FROM wardrobe_items WHERE user_id = ? ORDER BY is_favorite DESC, id DESC').all(req.sessionUser.id);
+    return res.json({ ok: true, items });
+  });
+
+  app.post('/api/wardrobe', requireAuth, requireCsrf, (req, res) => {
+    const b = req.body || {};
+    const name = String(b.name || '').trim().slice(0, 100);
+    const category = ['Haut', 'Bas', 'Chaussures', 'Veste', 'Accessoire'].includes(b.category) ? b.category : 'Haut';
+    const primaryHex = /^#[0-9A-Fa-f]{6}$/.test(b.primaryColorHex) ? b.primaryColorHex : '#3D5A80';
+    const primaryName = String(b.primaryColorName || 'Couleur détectée').trim().slice(0, 60);
+    const secondaryHex = /^#[0-9A-Fa-f]{6}$/.test(b.secondaryColorHex) ? b.secondaryColorHex : null;
+    const style = SUPPORTED_STYLES.includes(b.style) ? b.style : 'Casual';
+    const seasonTag = String(b.seasonTag || 'Toutes saisons').trim().slice(0, 40);
+    const brand = b.brand ? String(b.brand).trim().slice(0, 60) : null;
+    const size = b.size ? String(b.size).trim().slice(0, 20) : null;
+    const price = b.price !== undefined && b.price !== '' ? Math.max(0, Number(b.price) || 0) : null;
+    const imageDataUrl = typeof b.imageDataUrl === 'string' && b.imageDataUrl.startsWith('data:image/')
+      ? b.imageDataUrl.slice(0, 500000)
+      : null;
+
+    if (!name) {
+      return res.status(400).json({ error: 'Veuillez donner un nom à ce vêtement.' });
+    }
+
+    const info = db.prepare(`
+      INSERT INTO wardrobe_items (
+        user_id, name, category, primary_color_hex, primary_color_name,
+        secondary_color_hex, style, season_tag, brand, size, price, image_data_url
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      req.sessionUser.id, name, category, primaryHex, primaryName,
+      secondaryHex, style, seasonTag, brand, size, price, imageDataUrl
+    );
+
+    const created = db.prepare('SELECT * FROM wardrobe_items WHERE id = ? AND user_id = ?').get(info.lastInsertRowid, req.sessionUser.id);
+    return res.status(201).json({ ok: true, item: created });
+  });
+
+  app.put('/api/wardrobe/:id', requireAuth, requireCsrf, (req, res) => {
+    const itemId = Number(req.params.id);
+    const existing = db.prepare('SELECT * FROM wardrobe_items WHERE id = ? AND user_id = ?').get(itemId, req.sessionUser.id);
+    if (!existing) {
+      return res.status(404).json({ error: 'Vêtement introuvable ou accès non autorisé.' });
+    }
+
+    const b = req.body || {};
+    const name = b.name !== undefined ? String(b.name).trim().slice(0, 100) : existing.name;
+    const category = ['Haut', 'Bas', 'Chaussures', 'Veste', 'Accessoire'].includes(b.category) ? b.category : existing.category;
+    const primaryHex = /^#[0-9A-Fa-f]{6}$/.test(b.primaryColorHex) ? b.primaryColorHex : existing.primary_color_hex;
+    const primaryName = b.primaryColorName !== undefined ? String(b.primaryColorName).trim().slice(0, 60) : existing.primary_color_name;
+    const style = SUPPORTED_STYLES.includes(b.style) ? b.style : existing.style;
+    const seasonTag = b.seasonTag !== undefined ? String(b.seasonTag).trim().slice(0, 40) : existing.season_tag;
+    const brand = b.brand !== undefined ? String(b.brand || '').trim().slice(0, 60) : existing.brand;
+    const size = b.size !== undefined ? String(b.size || '').trim().slice(0, 20) : existing.size;
+    const isFavorite = b.isFavorite !== undefined ? (b.isFavorite ? 1 : 0) : existing.is_favorite;
+
+    db.prepare(`
+      UPDATE wardrobe_items
+      SET name = ?, category = ?, primary_color_hex = ?, primary_color_name = ?,
+          style = ?, season_tag = ?, brand = ?, size = ?, is_favorite = ?, updated_at = datetime('now')
+      WHERE id = ? AND user_id = ?
+    `).run(name, category, primaryHex, primaryName, style, seasonTag, brand, size, isFavorite, itemId, req.sessionUser.id);
+
+    const updated = db.prepare('SELECT * FROM wardrobe_items WHERE id = ? AND user_id = ?').get(itemId, req.sessionUser.id);
+    return res.json({ ok: true, item: updated });
+  });
+
+  app.delete('/api/wardrobe/:id', requireAuth, requireCsrf, (req, res) => {
+    const itemId = Number(req.params.id);
+    const info = db.prepare('DELETE FROM wardrobe_items WHERE id = ? AND user_id = ?').run(itemId, req.sessionUser.id);
+    if (info.changes === 0) {
+      return res.status(404).json({ error: 'Vêtement introuvable ou accès non autorisé.' });
+    }
+    return res.json({ ok: true });
+  });
+
+  app.post('/api/wardrobe/outfits', requireAuth, requireCsrf, (req, res) => {
+    const items = db.prepare('SELECT * FROM wardrobe_items WHERE user_id = ?').all(req.sessionUser.id);
+    const seasonId = (req.body && req.body.seasonId) || 'printemps_chaud';
+    const result = generateWardrobeOutfits(items, seasonId);
+    return res.json(result);
+  });
+
+  // =========================================================================
+  // CATALOGUE DE PRODUITS RÉELLEMENT ACHETABLES (Section 8)
+  // =========================================================================
+  app.get('/api/products', (req, res) => {
+    const productsPath = path.join(__dirname, '..', 'data', 'products.json');
+    let products = [];
+    try {
+      if (fs.existsSync(productsPath)) {
+        products = JSON.parse(fs.readFileSync(productsPath, 'utf8'));
+      }
+    } catch (err) {
+      products = [];
+    }
+
+    const { category, style, maxPrice, retailer, color } = req.query;
+    let filtered = products.filter((p) => p && p.officialUrl && p.officialUrl.startsWith('https://'));
+
+    if (category) filtered = filtered.filter((p) => p.category.toLowerCase() === String(category).toLowerCase());
+    if (style) filtered = filtered.filter((p) => p.style.toLowerCase() === String(style).toLowerCase());
+    if (retailer) filtered = filtered.filter((p) => p.retailer.toLowerCase().includes(String(retailer).toLowerCase()));
+    if (color) filtered = filtered.filter((p) => p.colorName.toLowerCase().includes(String(color).toLowerCase()));
+    if (maxPrice && !Number.isNaN(Number(maxPrice))) {
+      filtered = filtered.filter((p) => Number(p.price) <= Number(maxPrice));
+    }
+
+    // Signalement transparent de la fraîcheur des données (aucun tri par commission d'affiliation)
+    const nowMs = Date.now();
+    const enriched = filtered.map((p) => {
+      const updatedMs = Date.parse(p.lastUpdatedAt || '');
+      const isStale = Number.isNaN(updatedMs) || (nowMs - updatedMs) > 30 * 24 * 3600 * 1000;
+      return {
+        ...p,
+        isStale,
+        availabilityNote: p.availability || 'Disponibilité et tailles à vérifier sur la boutique officielle'
+      };
+    });
+
+    return res.json({
+      ok: true,
+      transparencyNotice: 'Les prix et disponibilités proviennent du dernier relevé horodaté. Les liens affiliés éventuels sont signalés et n\'influencent jamais l\'ordre des recommandations.',
+      products: enriched
+    });
+  });
+
+  // =========================================================================
+  // PAIEMENTS STRIPE ET GESTION DE L'ABONNEMENT (Section 9)
+  // =========================================================================
+  app.get('/api/billing/status', (req, res) => {
+    const configured = Boolean(stripeClient && (pricePremiumMonthly || priceSingleAnalysis));
+    return res.json({
+      ok: true,
+      stripeConfigured: configured,
+      pricingHypotheses: {
+        free: { priceEur: 0, label: 'Offre Gratuite (Découverte)' },
+        premiumMonthly: { priceEur: 5.99, label: 'Abonnement Premium (5,99 €/mois — tarif envisagé)' },
+        singleAnalysis: { priceEur: 9.99, label: 'Analyse complète à l\'unité sans abonnement (9,99 € — tarif envisagé)' }
+      }
+    });
+  });
+
+  app.post('/api/billing/checkout', requireAuth, requireCsrf, async (req, res) => {
+    if (!stripeClient) {
+      return res.status(503).json({
+        error: 'Les paiements en ligne ne sont pas encore activés sur cet environnement (clés Stripe absentes).'
+      });
+    }
+
+    const offerType = (req.body && req.body.offerType) === 'single' ? 'single' : 'subscription';
+    const priceId = offerType === 'single' ? priceSingleAnalysis : pricePremiumMonthly;
+
+    if (!priceId) {
+      return res.status(503).json({
+        error: `L'identifiant de tarif Stripe (${offerType}) n'est pas configuré côté serveur.`
+      });
+    }
+
+    const baseUrl = process.env.APP_BASE_URL || `${req.protocol}://${req.get('host')}`;
+    try {
+      const session = await stripeClient.checkout.sessions.create({
+        mode: offerType === 'single' ? 'payment' : 'subscription',
+        line_items: [{ price: priceId, quantity: 1 }],
+        client_reference_id: String(req.sessionUser.id),
+        customer_email: req.sessionUser.email,
+        metadata: { userId: String(req.sessionUser.id), offerType },
+        success_url: `${baseUrl}/?checkout_notice=pending_webhook`,
+        cancel_url: `${baseUrl}/?checkout_notice=canceled`
+      });
+
+      return res.json({ ok: true, checkoutUrl: session.url, sessionId: session.id });
+    } catch (err) {
+      return res.status(502).json({ error: 'Impossible d\'initialiser la session Stripe Checkout.' });
+    }
+  });
+
+  app.post('/api/billing/portal', requireAuth, requireCsrf, async (req, res) => {
+    if (!stripeClient) {
+      return res.status(503).json({ error: 'Le portail de facturation Stripe n\'est pas configuré.' });
+    }
+    const userRow = db.prepare('SELECT stripe_customer_id FROM users WHERE id = ?').get(req.sessionUser.id);
+    if (!userRow || !userRow.stripe_customer_id) {
+      return res.status(400).json({ error: 'Aucun abonnement Stripe actif n\'est rattaché à votre compte.' });
+    }
+    const baseUrl = process.env.APP_BASE_URL || `${req.protocol}://${req.get('host')}`;
+    try {
+      const portal = await stripeClient.billingPortal.sessions.create({
+        customer: userRow.stripe_customer_id,
+        return_url: `${baseUrl}/`
+      });
+      return res.json({ ok: true, portalUrl: portal.url });
+    } catch (err) {
+      return res.status(502).json({ error: 'Impossible d\'ouvrir le portail de gestion Stripe.' });
+    }
+  });
+
+  // =========================================================================
+  // FICHIERS STATIQUES FRONTEND ET GESTION GLOBALE DES ERREURS
+  // =========================================================================
+  const publicDir = path.join(__dirname, '..', 'public');
+  app.use(express.static(publicDir));
+
+  app.use((err, req, res, next) => {
+    // Ne jamais divulguer la stack trace ou les chemins internes au client
+    return res.status(500).json({
+      error: 'Une erreur inattendue est survenue côté serveur.'
+    });
+  });
+
+  return { app, db };
+}
+
+if (require.main === module) {
+  const { app } = createApp();
+  const port = Number(process.env.PORT) || 3000;
+  app.listen(port, () => {
+    console.log(`[ColorFit] Serveur démarré sur http://localhost:${port}`);
+  });
+}
+
+module.exports = { createApp };
